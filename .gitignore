@@ -1,0 +1,30 @@
+# Unreal Engine build output and generated folders
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+
+# Visual Studio / IDE
+.vs/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+.idea/
+.vscode/
+
+# Generated project files
+*.xcodeproj
+*.xcworkspace
+
+# Compiled / debug output
+*.pdb
+*.exp
+*.ilk
+*.obj
+*.lib
+*.dll
+*.exe
