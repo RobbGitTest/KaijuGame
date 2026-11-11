@@ -26,7 +26,14 @@ Targets: `KaijuGameEditor` (Editor) and `KaijuGame` (Game), both `BuildSettingsV
 
 - Only edit files in `Source/` and `Config/`.
 - Never edit `Binaries/`, `Intermediate/`, `Saved/`, or `.uasset` files.
+- Through the Unreal MCP (`mcp__unreal__*` tools), reading and inspecting assets is fine, but **ask before any change** (creating, modifying, deleting, or saving assets, spawning/deleting actors, `execute_python`).
 - Use Unreal naming prefixes: `A` for actors, `U` for objects, `F` for structs.
+
+## Unreal MCP
+
+- The `UnrealMCP` editor plugin (`Plugins/UnrealMCP`, a git submodule of https://github.com/aadeshrao123/Unreal-MCP) exposes the editor over TCP. The Python server `unrealmcp` (installed under Python 3.13, not the default 3.15) bridges it to Claude via `.mcp.json`.
+- The tools only work while the Unreal Editor is open with this project. Run `health_check` first; if it fails, ask the user to open the editor.
+- Fresh clone: `git submodule update --init` to fetch the plugin.
 
 ## Code layout
 

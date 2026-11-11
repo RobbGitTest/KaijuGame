@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "unreal": {
+      "type": "stdio",
+      "command": "C:\\Users\\some1\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\unrealmcp.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}
