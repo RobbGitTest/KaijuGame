@@ -7,6 +7,7 @@
 #include "HeavyCharacter.generated.h"
 
 class UCameraComponent;
+class UHeavyHUDWidget;
 class UHeavyMovementComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -42,6 +43,15 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	/**
+	 * Called when the sprint/boost button is released within DashTapMaxDuration.
+	 * Default implementation dashes (UHeavyMovementComponent::TryDash). Override in Blueprint to add effects
+	 * (call the parent to keep the dash).
+	 */
+	UFUNCTION(BlueprintNativeEvent, Category = "Heavy|Sprint")
+	void OnBoostTapped();
 
 	// --- Components ------------------------------------------------------------------------
 
@@ -78,6 +88,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Input")
 	TObjectPtr<UInputAction> LookStickAction;
 
+	/** Boolean. Space / A: press = liftoff, hold in the air = fuel thrust. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Input")
+	TObjectPtr<UInputAction> JumpAction;
+
+	/** Boolean. Left Shift / B: hold = sprint, quick tap = OnBoostTapped (future dash). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Input")
+	TObjectPtr<UInputAction> BoostAction;
+
+	/** A boost press released faster than this (s) counts as a tap. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Input", meta = (ClampMin = "0", Units = "s"))
+	float DashTapMaxDuration = 0.15f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Input", meta = (ClampMin = "0"))
 	float MouseLookSensitivity = 1.f;
 
@@ -99,6 +121,23 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Camera")
 	float CameraPitchMax = 45.f;
+
+	/** Extra field of view (degrees) while sprinting at speed. 0 disables. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Camera", meta = (ClampMin = "0", ClampMax = "40"))
+	float SprintFOVIncrease = 8.f;
+
+	/** How quickly the FOV blends in/out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Camera", meta = (ClampMin = "0"))
+	float FOVInterpSpeed = 4.f;
+
+	// --- HUD -------------------------------------------------------------------------------
+
+	/** Widget created for the local player (WBP_HeavyHUD). Leave empty for no HUD. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|HUD")
+	TSubclassOf<UHeavyHUDWidget> HUDWidgetClass;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Heavy|HUD")
+	TObjectPtr<UHeavyHUDWidget> HUDWidget;
 
 	// --- Visual lean -----------------------------------------------------------------------
 
@@ -129,9 +168,19 @@ protected:
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
 	void LookStick(const FInputActionValue& Value);
+	void JumpPressed();
+	void JumpReleased();
+	void BoostPressed();
+	void BoostReleased();
 
 private:
 	void UpdateLean(float DeltaSeconds);
+	void UpdateCameraFOV(float DeltaSeconds);
+	void CreateHUD(APlayerController* PC);
+	void RemoveHUD();
+
+	float BaseFOV = 90.f;
+	float BoostPressTime = -1.f;
 
 	FVector PreviousVelocity = FVector::ZeroVector;
 	FVector SmoothedAcceleration = FVector::ZeroVector;

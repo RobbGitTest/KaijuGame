@@ -11,6 +11,7 @@
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "HeavyHUDWidget.h"
 #include "HeavyMovementComponent.h"
 #include "InputActionValue.h"
 
@@ -58,6 +59,35 @@ void AHeavyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	PreviousVelocity = GetVelocity();
+	BaseFOV = FollowCamera->FieldOfView;
+}
+
+void AHeavyCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	RemoveHUD();
+	Super::EndPlay(EndPlayReason);
+}
+
+void AHeavyCharacter::CreateHUD(APlayerController* PC)
+{
+	if (HUDWidget || !HUDWidgetClass || !PC || !PC->IsLocalController())
+	{
+		return;
+	}
+	HUDWidget = CreateWidget<UHeavyHUDWidget>(PC, HUDWidgetClass);
+	if (HUDWidget)
+	{
+		HUDWidget->AddToViewport();
+	}
+}
+
+void AHeavyCharacter::RemoveHUD()
+{
+	if (HUDWidget)
+	{
+		HUDWidget->RemoveFromParent();
+		HUDWidget = nullptr;
+	}
 }
 
 void AHeavyCharacter::NotifyControllerChanged()
@@ -79,6 +109,12 @@ void AHeavyCharacter::NotifyControllerChanged()
 			PC->PlayerCameraManager->ViewPitchMin = CameraPitchMin;
 			PC->PlayerCameraManager->ViewPitchMax = CameraPitchMax;
 		}
+
+		CreateHUD(PC);
+	}
+	else
+	{
+		RemoveHUD();
 	}
 }
 
@@ -105,6 +141,68 @@ void AHeavyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	{
 		Input->BindAction(LookStickAction, ETriggerEvent::Triggered, this, &AHeavyCharacter::LookStick);
 	}
+	if (JumpAction)
+	{
+		Input->BindAction(JumpAction, ETriggerEvent::Started, this, &AHeavyCharacter::JumpPressed);
+		Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &AHeavyCharacter::JumpReleased);
+		Input->BindAction(JumpAction, ETriggerEvent::Canceled, this, &AHeavyCharacter::JumpReleased);
+	}
+	if (BoostAction)
+	{
+		Input->BindAction(BoostAction, ETriggerEvent::Started, this, &AHeavyCharacter::BoostPressed);
+		Input->BindAction(BoostAction, ETriggerEvent::Completed, this, &AHeavyCharacter::BoostReleased);
+		Input->BindAction(BoostAction, ETriggerEvent::Canceled, this, &AHeavyCharacter::BoostReleased);
+	}
+}
+
+void AHeavyCharacter::JumpPressed()
+{
+	if (HeavyMovement)
+	{
+		HeavyMovement->TryLiftoff();      // Only launches when hover-grounded.
+		HeavyMovement->SetThrustHeld(true); // Thrust kicks in once airborne and no longer rising fast.
+	}
+}
+
+void AHeavyCharacter::JumpReleased()
+{
+	if (HeavyMovement)
+	{
+		HeavyMovement->SetThrustHeld(false);
+	}
+}
+
+void AHeavyCharacter::BoostPressed()
+{
+	BoostPressTime = GetWorld()->GetTimeSeconds();
+	if (HeavyMovement)
+	{
+		HeavyMovement->SetSprinting(true);
+	}
+}
+
+void AHeavyCharacter::BoostReleased()
+{
+	if (HeavyMovement)
+	{
+		HeavyMovement->SetSprinting(false);
+	}
+	if (BoostPressTime >= 0.f && GetWorld()->GetTimeSeconds() - BoostPressTime <= DashTapMaxDuration)
+	{
+		OnBoostTapped();
+	}
+	BoostPressTime = -1.f;
+}
+
+void AHeavyCharacter::OnBoostTapped_Implementation()
+{
+	if (!HeavyMovement)
+	{
+		return;
+	}
+	// Dash along the current movement input; with no input, back-step away from the camera's facing.
+	const FVector CameraForward = Controller ? FRotator(0.f, Controller->GetControlRotation().Yaw, 0.f).Vector() : GetActorForwardVector();
+	HeavyMovement->TryDash(HeavyMovement->GetCurrentAcceleration(), CameraForward);
 }
 
 void AHeavyCharacter::Move(const FInputActionValue& Value)
@@ -142,6 +240,19 @@ void AHeavyCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	UpdateLean(DeltaSeconds);
+	UpdateCameraFOV(DeltaSeconds);
+}
+
+void AHeavyCharacter::UpdateCameraFOV(float DeltaSeconds)
+{
+	if (!FollowCamera || !HeavyMovement)
+	{
+		return;
+	}
+	// Widen only once actually moving faster than normal top speed, so a tap or standing sprint does nothing.
+	const bool bFastSprint = HeavyMovement->IsSprinting() && GetVelocity().Size2D() > HeavyMovement->MaxHoverSpeed * 0.9f;
+	const float TargetFOV = BaseFOV + (bFastSprint ? SprintFOVIncrease : 0.f);
+	FollowCamera->SetFieldOfView(FMath::FInterpTo(FollowCamera->FieldOfView, TargetFOV, DeltaSeconds, FOVInterpSpeed));
 }
 
 void AHeavyCharacter::UpdateLean(float DeltaSeconds)

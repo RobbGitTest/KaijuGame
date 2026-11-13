@@ -1,6 +1,6 @@
 # KaijuGame: Game Design Document
 
-> Status: v0.2. Items marked **[TUNE]** are starting values to adjust by feel.
+> Status: v0.3 (movement: sprint, liftoff and fuel thrust replace the boost-meter jump). Items marked **[TUNE]** are starting values to adjust by feel.
 > Items marked **[OPEN]** are undecided. Claude should ask before assuming.
 
 ## 1. Vision
@@ -12,7 +12,7 @@ trying to stop a massive kaiju from destroying city blocks.
 
 **Project goal:** this is also an experiment in how much Claude Code can accomplish in
 Unreal Engine 5.7. The focus is on **game feel**: the character controller, hovering,
-boost jumping, dashing, shooting and particle effects.
+sprinting, jet jumping and thrusting, dashing, shooting and particle effects.
 
 **Success criteria**
 1. A character controller the developer is personally satisfied with.
@@ -47,7 +47,7 @@ boost jumping, dashing, shooting and particle effects.
 | Role | Frontline mech |
 | Look | Blue armored mech, anime-inspired |
 | Theme | Lightning / electricity |
-| Movement | Grounded hover, boost jump, dash evade |
+| Movement | Grounded hover, sprint, liftoff jump with fuel thrust, dash evade |
 | Weapons | Lightning machine gun, charged shot, lightning sword special |
 | Defense | Health bar only (no shield or armor) |
 
@@ -57,7 +57,7 @@ Only one playable character for now.
 ## 6. Camera
 
 - **Third-person chase camera**, set further back to show the mech's size and kaiju scale.
-- Spring arm with light camera lag; slight FOV increase during boost.
+- Spring arm with light camera lag; slight FOV increase while sprinting at speed.
 - Aim reticle at screen center when free-aiming; shot direction is derived from the camera.
 - In lock-on, the camera frames both Heavy and the target. **[OPEN]**: exact framing.
 
@@ -70,8 +70,9 @@ Gamepad and keyboard/mouse are supported equally via **Enhanced Input**
 |---|---|---|
 | Move | Left stick | WASD |
 | Look / aim | Right stick | Mouse |
-| Boost jump | A / Cross | Space |
-| Dash evade | B / Circle | Left Shift |
+| Liftoff jump (press) / fuel thrust (hold in air) | A / Cross | Space |
+| Sprint (hold) | B / Circle | Left Shift (hold) |
+| Dash evade | Tap B / Circle | Tap Left Shift |
 | Fire (machine gun) | Right trigger | Left mouse |
 | Charged shot | Hold right trigger | Hold left mouse |
 | Lightning sword special | **[OPEN]** | **[OPEN]** |
@@ -98,30 +99,58 @@ Switching between schemes should be smooth. The mech rotates, not snaps.
 - Responsive acceleration with a little inertia and drift on direction changes (Armored Core-style).
 - Visual banking into turns and pitching with acceleration.
 
-### 8.3 Boost jump
-- A jet-boosted jump that lifts Heavy higher than a hop, then lets it glide down.
-- Short air control; landing returns to hover with a dust/shockwave effect.
-- Uses the **boost meter** (see 8.5).
+### 8.3 Sprint
+- **Hold** Left Shift / B to sprint: a higher top speed and acceleration while held.
+- Sprint is **free**: it uses no fuel or other resource, on the ground or in the air.
+- The camera FOV widens slightly once Heavy is actually moving at sprint speed.
 
-### 8.4 Dash evade
-- Quick burst in the input direction (or backward if no input), with a brief window of reduced vulnerability. **[OPEN]**: invulnerability frames or not.
-- **Does not use the boost meter.** It has its own cooldown or charges. **[OPEN]**: cooldown vs. charges.
+### 8.4 Liftoff jump and fuel thrust
+- **Liftoff (press Space / A while hovering):** a jet launch that propels Heavy upward and along the
+  current movement input (a horizontal push on top of the existing momentum). Liftoff is **free**.
+- **Thrust (hold Space / A in the air):** once Heavy stops rising, the thrusters engage and carry it in
+  a **gentle climb**, burning **fuel**. Releasing drops Heavy; pressing again in the air resumes thrust
+  while fuel remains. Thrust also arrests a fall (e.g. after running off a ledge).
+- Air control is limited while falling and somewhat better while thrusting.
+- Landing: the hover spring catches Heavy as it nears the ground and returns it to hover height.
+  A dust/shockwave effect on landing is planned (movement events already exist for it).
 
-### 8.5 Boost meter
-- A limited meter that drains while boosting or jumping and recharges (faster on the ground).
-- Dash is independent of this meter.
+### 8.5 Fuel
+- A limited resource that **only thrust** consumes. Liftoff and sprint are free.
+- Recharges on its own whenever Heavy is **not thrusting**: **slowly in the air** (falling, rising after
+  liftoff, dashing) after a short delay, and **considerably faster once grounded**.
+- Shown on the HUD as a bar (turns red when low).
 
-### 8.6 Starting values **[TUNE]**
+### 8.6 Dash evade
+- Triggered by a **quick tap** of Left Shift / B (holding sprints instead). The dash fires on release
+  of the tap, so the tap window is kept short.
+- A short, locked lunge at high speed in the **movement input direction**, or **backward** (away from
+  the camera's facing) with no input. Used to get out of telegraphed attacks.
+- The extra speed bleeds off into normal (or sprint) movement afterwards, so the dash flows into a slide.
+- **Air dash is enabled for testing** (may be disabled later): it holds altitude during the lunge and is
+  limited per airtime. Thrust pauses during a dash.
+- **Does not use fuel.** Limited by a short **cooldown**.
+- Invulnerability: a short window at the start of the dash is tracked, but nothing uses it until the
+  health/damage system exists. **[OPEN]**: whether it should grant full invulnerability.
+
+### 8.7 Starting values **[TUNE]**
 | Parameter | Start |
 |---|---|
 | Max hover speed | 1200 cm/s |
 | Acceleration | 2400 cm/s² |
+| Sprint speed / acceleration | 2000 cm/s / 3000 cm/s² |
+| Sprint FOV increase | +8° |
 | Hover height | 120 cm |
-| Boost jump height | 600 cm |
-| Air control | 0.4 |
-| Dash distance | 800 cm |
-| Dash cooldown | 1.0 s |
-| Boost meter | 100 units, jump costs 30 |
+| Liftoff vertical speed | 1400 cm/s (≈ 650 cm peak) |
+| Liftoff horizontal push | 600 cm/s (max 2400 cm/s horizontal) |
+| Air control (falling / thrusting) | 0.4 / 0.6 |
+| Thrust climb speed | 250 cm/s |
+| Fuel | 100 units, drains 25/s (≈ 4 s of thrust) |
+| Fuel recharge | 40/s on the ground (after 0.4 s), 8/s in the air (0.5 s after thrust stops) |
+| Dash | 3500 cm/s for 0.2 s (≈ 700 cm + slide), bleeds off at 7000 cm/s² |
+| Dash cooldown | 0.6 s from dash start |
+| Dash tap window | released within 0.15 s |
+| Air dashes per airtime | 1 |
+| Dash invulnerability window (unused yet) | 0.15 s |
 
 ## 9. Combat
 
@@ -195,7 +224,7 @@ Details such as phases, city-health or timer **[OPEN]**.
 ## 15. Milestones
 
 1. **Controller prototype:** hover movement, free-movement scheme, camera, input for both devices, on a flat test map using the Heavy asset.
-2. **Boost jump and dash:** jump, glide, landing, boost meter, independent dash.
+2. **Sprint, jump and dash:** sprint, liftoff, fuel thrust with HUD bar, landing, tap dash (done except landing/dash VFX).
 3. **Shooting:** machine gun projectiles, crosshair aiming, impact VFX, then the charged shot.
 4. **Lock-on:** target selection and the strafing movement scheme.
 5. **Targets and enemies:** dummy target, then a small kaiju with chase, telegraph and attack.

@@ -36,14 +36,160 @@ void UHeavyMovementComponent::SetDefaultMovementMode()
 	StartHovering();
 }
 
+void UHeavyMovementComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	Fuel = MaxFuel;
+}
+
 float UHeavyMovementComponent::GetMaxSpeed() const
 {
-	return IsHovering() ? MaxHoverSpeed : Super::GetMaxSpeed();
+	return IsHovering() ? GetCurrentMaxHoverSpeed() : Super::GetMaxSpeed();
 }
 
 float UHeavyMovementComponent::GetMaxAcceleration() const
 {
-	return IsHovering() ? HoverAcceleration : Super::GetMaxAcceleration();
+	return IsHovering() ? GetCurrentHoverAcceleration() : Super::GetMaxAcceleration();
+}
+
+bool UHeavyMovementComponent::TryLiftoff()
+{
+	if (!IsHovering() || !bHoverGrounded || bInLiftoff)
+	{
+		return false;
+	}
+
+	// Launch along the current movement input (camera-relative, set by AddMovementInput).
+	FVector Horizontal(Velocity.X, Velocity.Y, 0.f);
+	const FVector InputDir = Acceleration.GetSafeNormal2D();
+	if (!InputDir.IsNearlyZero())
+	{
+		Horizontal += InputDir * LiftoffHorizontalBoost * FMath::Clamp(AnalogInputModifier, 0.f, 1.f);
+		Horizontal = Horizontal.GetClampedToMaxSize(LiftoffMaxHorizontalSpeed);
+	}
+
+	Velocity = FVector(Horizontal.X, Horizontal.Y, LiftoffVerticalSpeed);
+	bInLiftoff = true;
+	bHoverGrounded = false;
+	GroundedTime = 0.f;
+	OnLiftoff.Broadcast();
+	return true;
+}
+
+void UHeavyMovementComponent::SetThrusting(bool bNewThrusting)
+{
+	if (bIsThrusting == bNewThrusting)
+	{
+		return;
+	}
+	bIsThrusting = bNewThrusting;
+	if (bIsThrusting)
+	{
+		OnThrustStarted.Broadcast();
+	}
+	else
+	{
+		OnThrustStopped.Broadcast();
+	}
+}
+
+void UHeavyMovementComponent::UpdateFuel(float DeltaTime)
+{
+	GroundedTime = bHoverGrounded ? GroundedTime + DeltaTime : 0.f;
+	bFuelRecharging = false;
+
+	if (bIsThrusting)
+	{
+		TimeSinceThrust = 0.f;
+		Fuel = FMath::Max(0.f, Fuel - FuelDrainPerSecond * DeltaTime);
+		return;
+	}
+	TimeSinceThrust += DeltaTime;
+
+	// Fast recharge once settled on the ground; slow recharge any other time Heavy isn't thrusting.
+	float Rate = 0.f;
+	if (bHoverGrounded && GroundedTime >= FuelRechargeDelay)
+	{
+		Rate = FuelRechargePerSecond;
+	}
+	else if (TimeSinceThrust >= FuelAirRechargeDelay)
+	{
+		Rate = FuelAirRechargePerSecond;
+	}
+
+	if (Rate > 0.f && Fuel < MaxFuel)
+	{
+		Fuel = FMath::Min(MaxFuel, Fuel + Rate * DeltaTime);
+		bFuelRecharging = true;
+	}
+}
+
+bool UHeavyMovementComponent::CanDash() const
+{
+	if (!IsHovering() || IsDashing() || GetDashCooldownRemaining() > 0.f)
+	{
+		return false;
+	}
+	if (!bHoverGrounded)
+	{
+		if (!bAllowAirDash)
+		{
+			return false;
+		}
+		if (MaxAirDashes > 0 && AirDashesUsed >= MaxAirDashes)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+float UHeavyMovementComponent::GetDashCooldownRemaining() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.f;
+	}
+	return FMath::Max(0.f, static_cast<float>(LastDashStartTime + DashCooldown - World->GetTimeSeconds()));
+}
+
+bool UHeavyMovementComponent::IsDashInvulnerable() const
+{
+	const UWorld* World = GetWorld();
+	return World && (World->GetTimeSeconds() - LastDashStartTime) <= DashInvulnerabilityTime;
+}
+
+bool UHeavyMovementComponent::TryDash(FVector WorldDirection, FVector FallbackForward)
+{
+	if (!CanDash())
+	{
+		return false;
+	}
+
+	FVector Dir = WorldDirection.GetSafeNormal2D();
+	if (Dir.IsNearlyZero())
+	{
+		// No input: back-step away from where the camera looks.
+		Dir = -FallbackForward.GetSafeNormal2D();
+	}
+	if (Dir.IsNearlyZero())
+	{
+		return false;
+	}
+
+	if (!bHoverGrounded)
+	{
+		++AirDashesUsed;
+	}
+
+	DashDirection = Dir;
+	DashTimeRemaining = DashDuration;
+	bDashRecovering = false;
+	LastDashStartTime = GetWorld()->GetTimeSeconds();
+	SetThrusting(false);
+	OnDashStarted.Broadcast();
+	return true;
 }
 
 float UHeavyMovementComponent::GetMaxBrakingDeceleration() const
@@ -69,7 +215,7 @@ void UHeavyMovementComponent::PhysCustom(float DeltaTime, int32 Iterations)
 
 bool UHeavyMovementComponent::TraceHoverGround(float& OutGroundZ)
 {
-	bHoverGrounded = false;
+	bool bGroundInReach = false;
 	HoverGroundDistance = -1.f;
 
 	const UCapsuleComponent* Capsule = CharacterOwner ? CharacterOwner->GetCapsuleComponent() : nullptr;
@@ -99,12 +245,12 @@ bool UHeavyMovementComponent::TraceHoverGround(float& OutGroundZ)
 	{
 		OutGroundZ = Hit.ImpactPoint.Z;
 		HoverGroundDistance = FMath::Max(0.f, (Center.Z - HalfHeight) - OutGroundZ);
-		bHoverGrounded = true;
+		bGroundInReach = true;
 	}
 
 	if (bDrawHoverDebug)
 	{
-		const FColor Color = bHoverGrounded ? FColor::Green : FColor::Red;
+		const FColor Color = bGroundInReach ? (bInLiftoff ? FColor::Yellow : FColor::Green) : FColor::Red;
 		DrawDebugLine(GetWorld(), Start, bHit ? Hit.Location : End, Color, false, -1.f, 0, 2.f);
 		if (bHit)
 		{
@@ -112,7 +258,7 @@ bool UHeavyMovementComponent::TraceHoverGround(float& OutGroundZ)
 		}
 	}
 
-	return bHoverGrounded;
+	return bGroundInReach;
 }
 
 void UHeavyMovementComponent::PhysHover(float DeltaTime, int32 Iterations)
@@ -132,29 +278,93 @@ void UHeavyMovementComponent::PhysHover(float DeltaTime, int32 Iterations)
 		RemainingTime -= Step;
 
 		float GroundZ = 0.f;
-		const bool bGrounded = TraceHoverGround(GroundZ);
+		const bool bGroundInReach = TraceHoverGround(GroundZ);
+
+		// After a liftoff, ignore the spring until Heavy is coming back down close to the ground.
+		if (bInLiftoff && bGroundInReach && Velocity.Z <= 0.f && HoverGroundDistance <= LandingCatchHeight)
+		{
+			bInLiftoff = false;
+		}
+
+		const bool bWasGrounded = bHoverGrounded;
+		bHoverGrounded = bGroundInReach && !bInLiftoff;
+		const bool bGrounded = bHoverGrounded;
+		if (bGrounded && !bWasGrounded)
+		{
+			OnHoverLanded.Broadcast();
+		}
+		if (bGrounded)
+		{
+			AirDashesUsed = 0;
+		}
+
+		// Dash timer.
+		const bool bDashingThisStep = DashTimeRemaining > 0.f;
+		if (bDashingThisStep)
+		{
+			DashTimeRemaining -= Step;
+			if (DashTimeRemaining <= 0.f)
+			{
+				DashTimeRemaining = 0.f;
+				bDashRecovering = true;
+				OnDashEnded.Broadcast();
+			}
+		}
+
+		// Thrust: holding jump in the air with fuel left, once Heavy is no longer rising faster than the climb speed.
+		// Suspended during a dash (the dash holds altitude on its own).
+		const bool bCanThrust = !bGrounded && bThrustHeld && Fuel > 0.f && !bDashingThisStep;
+		SetThrusting(bCanThrust && (bIsThrusting || Velocity.Z <= ThrustClimbSpeed));
 
 		// --- Horizontal: accelerate toward camera-relative input with some inertia ---
 		FVector Horizontal(Velocity.X, Velocity.Y, 0.f);
+
+		// After a dash, bleed only the speed above the current top speed so it flows into normal movement.
+		if (bDashRecovering && !bDashingThisStep)
+		{
+			const float MaxSpeedNow = GetCurrentMaxHoverSpeed();
+			const float Speed = Horizontal.Size();
+			if (Speed > MaxSpeedNow)
+			{
+				Horizontal = Horizontal.GetSafeNormal() * FMath::FInterpConstantTo(Speed, MaxSpeedNow, Step, DashExitDeceleration);
+			}
+			else
+			{
+				bDashRecovering = false;
+			}
+		}
 		const FVector InputDir = Acceleration.GetSafeNormal2D();
-		const float Control = bGrounded ? 1.f : HoverAirControl;
+		const float Control = bGrounded ? 1.f : (bIsThrusting ? ThrustAirControl : HoverAirControl);
 
 		FVector DesiredVelocity = FVector::ZeroVector;
 		float Rate = HoverBrakingDeceleration;
 		if (!InputDir.IsNearlyZero())
 		{
-			DesiredVelocity = InputDir * MaxHoverSpeed * FMath::Clamp(AnalogInputModifier, 0.f, 1.f);
-			Rate = HoverAcceleration;
+			DesiredVelocity = InputDir * GetCurrentMaxHoverSpeed() * FMath::Clamp(AnalogInputModifier, 0.f, 1.f);
+			Rate = GetCurrentHoverAcceleration();
 			if (FVector::DotProduct(Horizontal, InputDir) < 0.f)
 			{
 				Rate *= DirectionChangeAccelerationScale;
 			}
 		}
-		Horizontal = FMath::VInterpConstantTo(Horizontal, DesiredVelocity, Step, Rate * Control);
+		if (bDashingThisStep)
+		{
+			// Locked lunge: fixed speed along the dash direction, input ignored.
+			Horizontal = DashDirection * DashSpeed;
+		}
+		else
+		{
+			Horizontal = FMath::VInterpConstantTo(Horizontal, DesiredVelocity, Step, Rate * Control);
+		}
 
 		// --- Vertical: spring/damper toward hover height, gravity when nothing is below ---
 		float VerticalSpeed = Velocity.Z;
-		if (bGrounded)
+		if (bDashingThisStep && !bGrounded)
+		{
+			// Air dash holds altitude.
+			VerticalSpeed = 0.f;
+		}
+		else if (bGrounded)
 		{
 			const float TargetZ = GroundZ + HoverHeight + HalfHeight;
 			const float Error = TargetZ - UpdatedComponent->GetComponentLocation().Z;
@@ -162,10 +372,17 @@ void UHeavyMovementComponent::PhysHover(float DeltaTime, int32 Iterations)
 			VerticalSpeed = (VerticalSpeed + Error * HoverStiffness * Step) / (1.f + HoverDamping * Step);
 			VerticalSpeed = FMath::Clamp(VerticalSpeed, -MaxHoverVerticalSpeed, MaxHoverVerticalSpeed);
 		}
+		else if (bIsThrusting)
+		{
+			// Thrusters ease vertical speed toward a gentle climb (also arresting a fall).
+			VerticalSpeed = FMath::FInterpConstantTo(VerticalSpeed, ThrustClimbSpeed, Step, ThrustAcceleration);
+		}
 		else
 		{
 			VerticalSpeed = FMath::Max(VerticalSpeed + GetGravityZ() * Step, -GetPhysicsVolume()->TerminalVelocity);
 		}
+
+		UpdateFuel(Step);
 
 		Velocity = FVector(Horizontal.X, Horizontal.Y, VerticalSpeed);
 
