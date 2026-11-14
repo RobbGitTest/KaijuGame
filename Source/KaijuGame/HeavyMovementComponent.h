@@ -258,6 +258,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
 	bool IsDashing() const { return DashTimeRemaining > 0.f; }
 
+	/** World-space direction of the current / most recent dash (flat, normalised). */
+	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
+	FVector GetDashDirection() const { return DashDirection; }
+
 	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
 	bool CanDash() const;
 
