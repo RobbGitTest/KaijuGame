@@ -66,11 +66,12 @@ void UHeavyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		? FMath::FInterpTo(LocomotionAlpha, TargetAlpha, DeltaSeconds, LocomotionInterpSpeed)
 		: TargetAlpha;
 
-	// Air axis: thrusting or rising -> +1, falling -> -1, grounded (or an air dash lunge) -> 0.
+	// Air axis: thrusting (or, optionally, rising) -> +1, otherwise in the air -> -1, grounded (or an air dash lunge) -> 0.
 	float TargetAir = 0.f;
 	if (!bIsGrounded && !(bIsDashing && bAirDashUsesGroundPose))
 	{
-		TargetAir = (bIsThrusting || VerticalSpeed > RisingSpeedThreshold) ? 1.f : -1.f;
+		const bool bRisingPose = bRisingUsesThrustPose && VerticalSpeed > RisingSpeedThreshold;
+		TargetAir = (bIsThrusting || bRisingPose) ? 1.f : -1.f;
 	}
 
 	AirAlpha = AirInterpSpeed > 0.f

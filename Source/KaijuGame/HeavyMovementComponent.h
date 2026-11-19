@@ -165,6 +165,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Dash", meta = (ClampMin = "0", Units = "s"))
 	float DashInvulnerabilityTime = 0.15f;
 
+	/** Liftoff (jump) is blocked for this long after a dash starts (s). Should be at least DashDuration. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Dash", meta = (ClampMin = "0", Units = "s"))
+	float DashJumpLockout = 0.35f;
+
+	/** Turn-rate multiplier while the dash rotation lock is active (0 = no turning, 1 = normal turning). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Dash", meta = (ClampMin = "0", ClampMax = "1"))
+	float DashRotationRateScale = 0.1f;
+
+	/** How long the turn-rate limit lasts after the dash itself ends (s), so Heavy doesn't snap around on exit. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Dash", meta = (ClampMin = "0", Units = "s"))
+	float DashRotationLockExtraTime = 0.1f;
+
+	/** True while liftoff is blocked by a recent dash. */
+	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
+	bool IsDashJumpLocked() const { return GetTimeSinceDashStart() < DashJumpLockout; }
+
+	/** True while turning is limited by a recent dash. */
+	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
+	bool IsDashRotationLocked() const { return GetTimeSinceDashStart() < DashDuration + DashRotationLockExtraTime; }
+
 	// --- Vertical (hover spring) -----------------------------------------------------------
 
 	/** Gap between the bottom of the capsule and the ground (cm). */
@@ -296,6 +316,7 @@ public:
 	virtual float GetMaxSpeed() const override;
 	virtual float GetMaxAcceleration() const override;
 	virtual float GetMaxBrakingDeceleration() const override;
+	virtual FRotator GetDeltaRotation(float DeltaTime) const override;
 	virtual bool ShouldRemainVertical() const override;
 
 protected:
@@ -313,6 +334,9 @@ protected:
 
 	void SetThrusting(bool bNewThrusting);
 	void UpdateFuel(float DeltaTime);
+
+	/** Seconds since the last dash started (huge if never dashed). */
+	float GetTimeSinceDashStart() const;
 
 private:
 	bool bHoverGrounded = false;

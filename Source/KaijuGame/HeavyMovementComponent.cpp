@@ -54,7 +54,7 @@ float UHeavyMovementComponent::GetMaxAcceleration() const
 
 bool UHeavyMovementComponent::TryLiftoff()
 {
-	if (!IsHovering() || !bHoverGrounded || bInLiftoff)
+	if (!IsHovering() || !bHoverGrounded || bInLiftoff || IsDashJumpLocked())
 	{
 		return false;
 	}
@@ -122,6 +122,19 @@ void UHeavyMovementComponent::UpdateFuel(float DeltaTime)
 		Fuel = FMath::Min(MaxFuel, Fuel + Rate * DeltaTime);
 		bFuelRecharging = true;
 	}
+}
+
+float UHeavyMovementComponent::GetTimeSinceDashStart() const
+{
+	const UWorld* World = GetWorld();
+	return World ? static_cast<float>(World->GetTimeSeconds() - LastDashStartTime) : UE_BIG_NUMBER;
+}
+
+FRotator UHeavyMovementComponent::GetDeltaRotation(float DeltaTime) const
+{
+	// During (and just after) a dash Heavy commits to its heading: turning toward new input is heavily slowed.
+	const FRotator Delta = Super::GetDeltaRotation(DeltaTime);
+	return IsDashRotationLocked() ? Delta * DashRotationRateScale : Delta;
 }
 
 bool UHeavyMovementComponent::CanDash() const

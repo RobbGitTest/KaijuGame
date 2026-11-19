@@ -11,6 +11,7 @@ class UHeavyHUDWidget;
 class UHeavyMovementComponent;
 class UInputAction;
 class UInputMappingContext;
+class UNiagaraComponent;
 class USpringArmComponent;
 struct FInputActionValue;
 
@@ -164,6 +165,38 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Lean")
 	bool bInvertPitch = false;
 
+	// --- Thruster VFX ----------------------------------------------------------------------
+	// Every Niagara component on Heavy whose system exposes RedColorArrayParam is treated as a thruster.
+	// The flame is "hot" (red) while sprinting at speed, rising from a liftoff, thrusting in the air, or dashing,
+	// and "cool" (blue) otherwise. On each change the matching colour array is copied into ActiveColorArrayParam.
+
+	/** User array (in the Niagara system) that the Thruster emitter's Color module reads. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Thrusters")
+	FName ActiveColorArrayParam = TEXT("ActiveThrusterColorArray");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Thrusters")
+	FName RedColorArrayParam = TEXT("RedThrusterColorArray");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Thrusters")
+	FName BlueColorArrayParam = TEXT("BlueThrusterColorArray");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Thrusters")
+	FName EmissiveParam = TEXT("Thruster_Emissive");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Thrusters")
+	float HotThrusterEmissive = 16.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Thrusters")
+	float CoolThrusterEmissive = 3.f;
+
+	/** Sprint only turns the flame red above this horizontal speed (cm/s), so holding sprint while idle stays blue. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Thrusters", meta = (ClampMin = "0", Units = "cm/s"))
+	float SprintHotMinSpeed = 300.f;
+
+	/** True while the thrusters are in the red (hot) state. */
+	UFUNCTION(BlueprintPure, Category = "Heavy|Thrusters")
+	bool AreThrustersHot() const { return bThrustersHot; }
+
 	// --- Input handlers --------------------------------------------------------------------
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
@@ -178,6 +211,16 @@ private:
 	void UpdateCameraFOV(float DeltaSeconds);
 	void CreateHUD(APlayerController* PC);
 	void RemoveHUD();
+	void InitThrusters();
+	void UpdateThrusters();
+	void ApplyThrusterState(bool bHot);
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UNiagaraComponent>> ThrusterComponents;
+
+	TArray<FLinearColor> HotThrusterColors;
+	TArray<FLinearColor> CoolThrusterColors;
+	bool bThrustersHot = false;
 
 	float BaseFOV = 90.f;
 	float BoostPressTime = -1.f;

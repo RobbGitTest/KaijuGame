@@ -14,6 +14,8 @@
 #include "HeavyHUDWidget.h"
 #include "HeavyMovementComponent.h"
 #include "InputActionValue.h"
+#include "NiagaraComponent.h"
+#include "NiagaraDataInterfaceArrayFunctionLibrary.h"
 
 AHeavyCharacter::AHeavyCharacter(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.SetDefaultSubobjectClass<UHeavyMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -60,6 +62,7 @@ void AHeavyCharacter::BeginPlay()
 	Super::BeginPlay();
 	PreviousVelocity = GetVelocity();
 	BaseFOV = FollowCamera->FieldOfView;
+	InitThrusters();
 }
 
 void AHeavyCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -241,6 +244,74 @@ void AHeavyCharacter::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	UpdateLean(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
+	UpdateThrusters();
+}
+
+void AHeavyCharacter::InitThrusters()
+{
+	ThrusterComponents.Reset();
+	HotThrusterColors.Reset();
+	CoolThrusterColors.Reset();
+
+	TArray<UNiagaraComponent*> NiagaraComponents;
+	GetComponents<UNiagaraComponent>(NiagaraComponents);
+	for (UNiagaraComponent* Comp : NiagaraComponents)
+	{
+		const TArray<FLinearColor> Hot = UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayColor(Comp, RedColorArrayParam);
+		if (Hot.IsEmpty())
+		{
+			continue; // Not a thruster system.
+		}
+		if (HotThrusterColors.IsEmpty())
+		{
+			// All thrusters share one system, so read the source palettes once.
+			HotThrusterColors = Hot;
+			CoolThrusterColors = UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayColor(Comp, BlueColorArrayParam);
+		}
+		ThrusterComponents.Add(Comp);
+	}
+
+	// Start cool, and force the write even though bThrustersHot already defaults to false.
+	bThrustersHot = false;
+	ApplyThrusterState(false);
+}
+
+void AHeavyCharacter::UpdateThrusters()
+{
+	if (!HeavyMovement || ThrusterComponents.IsEmpty())
+	{
+		return;
+	}
+
+	const FVector Velocity = GetVelocity();
+	const bool bSprintingAtSpeed = HeavyMovement->IsSprinting() && Velocity.Size2D() > SprintHotMinSpeed;
+	// IsInLiftoff() stays true until landing; only the rising part of the jump counts as firing.
+	const bool bLiftingOff = HeavyMovement->IsInLiftoff() && Velocity.Z > 0.f;
+	const bool bAirThrust = HeavyMovement->IsThrusting();
+	const bool bDashing = HeavyMovement->IsDashing();
+
+	const bool bHot = bSprintingAtSpeed || bLiftingOff || bAirThrust || bDashing;
+	if (bHot != bThrustersHot)
+	{
+		bThrustersHot = bHot;
+		ApplyThrusterState(bHot);
+	}
+}
+
+void AHeavyCharacter::ApplyThrusterState(bool bHot)
+{
+	const TArray<FLinearColor>& Colors = bHot ? HotThrusterColors : CoolThrusterColors;
+	const float Emissive = bHot ? HotThrusterEmissive : CoolThrusterEmissive;
+
+	for (UNiagaraComponent* Comp : ThrusterComponents)
+	{
+		if (!Comp)
+		{
+			continue;
+		}
+		UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayColor(Comp, ActiveColorArrayParam, Colors);
+		Comp->SetVariableFloat(EmissiveParam, Emissive);
+	}
 }
 
 void AHeavyCharacter::UpdateCameraFOV(float DeltaSeconds)

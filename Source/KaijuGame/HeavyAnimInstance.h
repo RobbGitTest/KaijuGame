@@ -51,8 +51,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim", meta = (ClampMin = "0"))
 	float AirInterpSpeed = 6.f;
 
-	/** In the air without thrust, Heavy shows the thrust/rise pose while rising faster than this (cm/s). */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim", meta = (Units = "cm/s"))
+	/**
+	 * If true, rising without thrust (e.g. still carrying the jump's momentum after Heavy_Jump ends) shows the
+	 * thrust pose. If false, only real thrust shows the thrust pose and everything else in the air is the fall pose.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim")
+	bool bRisingUsesThrustPose = false;
+
+	/** With bRisingUsesThrustPose, Heavy shows the thrust pose while rising faster than this (cm/s). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim", meta = (Units = "cm/s", EditCondition = "bRisingUsesThrustPose"))
 	float RisingSpeedThreshold = 100.f;
 
 	/** If true, an air dash shows the ground row (run pose) instead of the air poses. */
