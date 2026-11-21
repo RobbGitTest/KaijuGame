@@ -11,11 +11,14 @@
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "HeavyAnimInstance.h"
 #include "HeavyHUDWidget.h"
 #include "HeavyMovementComponent.h"
 #include "InputActionValue.h"
+#include "Kismet/GameplayStatics.h"
 #include "NiagaraComponent.h"
 #include "NiagaraDataInterfaceArrayFunctionLibrary.h"
+#include "NiagaraFunctionLibrary.h"
 
 AHeavyCharacter::AHeavyCharacter(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.SetDefaultSubobjectClass<UHeavyMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -62,7 +65,14 @@ void AHeavyCharacter::BeginPlay()
 	Super::BeginPlay();
 	PreviousVelocity = GetVelocity();
 	BaseFOV = FollowCamera->FieldOfView;
+	BaseArmLength = CameraBoom->TargetArmLength;
+	InitWingBeams();
 	InitThrusters();
+
+	if (HeavyMovement)
+	{
+		HeavyMovement->OnDashStarted.AddUniqueDynamic(this, &AHeavyCharacter::HandleDashStarted);
+	}
 }
 
 void AHeavyCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -156,6 +166,194 @@ void AHeavyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 		Input->BindAction(BoostAction, ETriggerEvent::Completed, this, &AHeavyCharacter::BoostReleased);
 		Input->BindAction(BoostAction, ETriggerEvent::Canceled, this, &AHeavyCharacter::BoostReleased);
 	}
+	if (LockOnAction)
+	{
+		Input->BindAction(LockOnAction, ETriggerEvent::Started, this, &AHeavyCharacter::LockOnPressed);
+	}
+}
+
+void AHeavyCharacter::LockOnPressed()
+{
+	ToggleLockOn();
+}
+
+void AHeavyCharacter::ToggleLockOn()
+{
+	if (IsLockedOn())
+	{
+		ClearLockOn();
+		return;
+	}
+
+	AActor* Target = FindBestLockOnTarget();
+	if (!Target)
+	{
+		return;
+	}
+	LockOnTarget = Target;
+	if (HeavyMovement)
+	{
+		HeavyMovement->SetLockOnTarget(Target);
+		HeavyMovement->SetLockOnFocusLocation(GetTargetAimPoint(Target));
+	}
+}
+
+void AHeavyCharacter::ClearLockOn()
+{
+	LockOnTarget.Reset();
+	if (HeavyMovement)
+	{
+		HeavyMovement->SetLockOnTarget(nullptr);
+	}
+}
+
+FVector AHeavyCharacter::GetTargetAimPoint(const AActor* Target) const
+{
+	if (!Target)
+	{
+		return FVector::ZeroVector;
+	}
+	TArray<USceneComponent*> Points;
+	Target->GetComponents<USceneComponent>(Points);
+	for (const USceneComponent* Point : Points)
+	{
+		if (Point && Point->ComponentHasTag(LockOnPointTag))
+		{
+			return Point->GetComponentLocation();
+		}
+	}
+	FVector Origin, Extent;
+	Target->GetActorBounds(true, Origin, Extent);
+	return Origin;
+}
+
+FVector AHeavyCharacter::GetLockOnTargetLocation() const
+{
+	return GetTargetAimPoint(LockOnTarget.Get());
+}
+
+AActor* AHeavyCharacter::FindBestLockOnTarget() const
+{
+	TArray<AActor*> Candidates;
+	UGameplayStatics::GetAllActorsWithTag(this, LockOnTargetTag, Candidates);
+
+	const FVector ViewOrigin = GetActorLocation();
+	const FVector ViewDir = Controller ? Controller->GetControlRotation().Vector() : GetActorForwardVector();
+	const float CosView = FMath::Cos(FMath::DegreesToRadians(LockOnViewAngle));
+
+	AActor* BestInView = nullptr;
+	float BestInViewScore = TNumericLimits<float>::Max();
+	AActor* Nearest = nullptr;
+	float NearestDist = TNumericLimits<float>::Max();
+
+	for (AActor* Candidate : Candidates)
+	{
+		if (!Candidate || Candidate == this || Candidate->IsHidden())
+		{
+			continue;
+		}
+		const FVector ToTarget = GetTargetAimPoint(Candidate) - ViewOrigin;
+		const float Dist = ToTarget.Size();
+		if (Dist > LockOnMaxDistance || Dist < KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+		if (Dist < NearestDist)
+		{
+			NearestDist = Dist;
+			Nearest = Candidate;
+		}
+		const float Cos = FVector::DotProduct(ToTarget / Dist, ViewDir);
+		if (Cos >= CosView)
+		{
+			// Prefer what's closest to the centre of view; distance is a light tie-breaker.
+			const float Score = (1.f - Cos) + 0.25f * (Dist / LockOnMaxDistance);
+			if (Score < BestInViewScore)
+			{
+				BestInViewScore = Score;
+				BestInView = Candidate;
+			}
+		}
+	}
+	return BestInView ? BestInView : (bLockOnAllowOutsideView ? Nearest : nullptr);
+}
+
+void AHeavyCharacter::UpdateLockOn(float DeltaSeconds)
+{
+	if (!LockOnTarget.IsValid())
+	{
+		if (HeavyMovement && HeavyMovement->IsLockedOn())
+		{
+			ClearLockOn(); // Target was destroyed.
+		}
+		return;
+	}
+
+	const FVector AimPoint = GetLockOnTargetLocation();
+	if (FVector::Dist(AimPoint, GetActorLocation()) > LockOnBreakDistance)
+	{
+		ClearLockOn();
+		return;
+	}
+	if (HeavyMovement)
+	{
+		HeavyMovement->SetLockOnFocusLocation(AimPoint);
+	}
+
+	// Camera: sit behind Heavy on the Heavy->target line and look at a point between them, so both stay framed.
+	if (Controller)
+	{
+		const FVector Pivot = CameraBoom->GetComponentLocation();
+		const FVector Focus = FMath::Lerp(Pivot, AimPoint, LockOnCameraFocusBias);
+		const FVector Flat = (AimPoint - Pivot).GetSafeNormal2D();
+		if (!Flat.IsNearlyZero())
+		{
+			FRotator Desired = Flat.Rotation();
+			const FVector ToFocus = Focus - Pivot;
+			const float FlatDist = FMath::Max(ToFocus.Size2D(), 1.f);
+			Desired.Pitch = FMath::Clamp(FMath::RadiansToDegrees(FMath::Atan2(ToFocus.Z, FlatDist)) + LockOnCameraPitchOffset,
+				LockOnCameraPitchMin, LockOnCameraPitchMax);
+			const FRotator Current = Controller->GetControlRotation();
+			const FRotator NewRot = LockOnCameraInterpSpeed > 0.f
+				? FMath::RInterpTo(Current, Desired, DeltaSeconds, LockOnCameraInterpSpeed)
+				: Desired;
+			Controller->SetControlRotation(NewRot);
+		}
+	}
+}
+
+void AHeavyCharacter::UpdateArmLength(float DeltaSeconds)
+{
+	if (!CameraBoom)
+	{
+		return;
+	}
+	const float Target = BaseArmLength + (IsLockedOn() ? LockOnExtraArmLength : 0.f);
+	CameraBoom->TargetArmLength = ArmLengthInterpSpeed > 0.f
+		? FMath::FInterpTo(CameraBoom->TargetArmLength, Target, DeltaSeconds, ArmLengthInterpSpeed)
+		: Target;
+}
+
+void AHeavyCharacter::HandleDashStarted()
+{
+	if (!DashVFX || !HeavyMovement)
+	{
+		return;
+	}
+	const FVector DashDir = HeavyMovement->GetDashDirection();
+	const FQuat DashQuat = (DashDir.IsNearlyZero() ? GetActorForwardVector() : DashDir).ToOrientationQuat();
+	const FRotator SpawnRot = (DashQuat * DashVFXRotation.Quaternion()).Rotator();
+	const FVector SpawnLoc = GetActorLocation() + GetActorQuat().RotateVector(DashVFXOffset);
+
+	if (bAttachDashVFX)
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAttached(DashVFX, GetRootComponent(), NAME_None, SpawnLoc, SpawnRot,
+			DashVFXScale, EAttachLocation::KeepWorldPosition, true, ENCPoolMethod::None);
+	}
+	else
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, DashVFX, SpawnLoc, SpawnRot, DashVFXScale);
+	}
 }
 
 void AHeavyCharacter::JumpPressed()
@@ -225,6 +423,10 @@ void AHeavyCharacter::Move(const FInputActionValue& Value)
 
 void AHeavyCharacter::Look(const FInputActionValue& Value)
 {
+	if (IsLockedOn() && !bAllowLookWhileLockedOn)
+	{
+		return;
+	}
 	const FVector2D Axis = Value.Get<FVector2D>() * MouseLookSensitivity;
 	AddControllerYawInput(Axis.X);
 	AddControllerPitchInput(bInvertMouseY ? Axis.Y : -Axis.Y);
@@ -232,6 +434,10 @@ void AHeavyCharacter::Look(const FInputActionValue& Value)
 
 void AHeavyCharacter::LookStick(const FInputActionValue& Value)
 {
+	if (IsLockedOn() && !bAllowLookWhileLockedOn)
+	{
+		return;
+	}
 	const FVector2D Axis = Value.Get<FVector2D>();
 	const float DeltaSeconds = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
 	AddControllerYawInput(Axis.X * GamepadLookRate.X * DeltaSeconds);
@@ -242,9 +448,97 @@ void AHeavyCharacter::LookStick(const FInputActionValue& Value)
 void AHeavyCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	UpdateLockOn(DeltaSeconds);
+	UpdateArmLength(DeltaSeconds);
 	UpdateLean(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
 	UpdateThrusters();
+	UpdateWingBeams(DeltaSeconds);
+}
+
+void AHeavyCharacter::InitWingBeams()
+{
+	WingBeamComponents.Reset();
+	TArray<UNiagaraComponent*> NiagaraComponents;
+	GetComponents<UNiagaraComponent>(NiagaraComponents);
+	for (UNiagaraComponent* Comp : NiagaraComponents)
+	{
+		if (Comp && ((!WingBeamNamePrefix.IsEmpty() && Comp->GetName().StartsWith(WingBeamNamePrefix))
+			|| Comp->ComponentHasTag(WingBeamTag)))
+		{
+			WingBeamComponents.Add(Comp);
+		}
+	}
+
+	// Start off regardless of the components' Auto Activate setting.
+	bWingBeamsOn = false;
+	WingBeamOffTimer = 0.f;
+	for (UNiagaraComponent* Comp : WingBeamComponents)
+	{
+		Comp->DeactivateImmediate();
+	}
+}
+
+void AHeavyCharacter::UpdateWingBeams(float DeltaSeconds)
+{
+	if (!HeavyMovement || WingBeamComponents.IsEmpty())
+	{
+		return;
+	}
+
+	const bool bDashTrigger = bWingBeamsOnDash && HeavyMovement->IsDashing();
+	const bool bSprintTrigger = bWingBeamsOnSprint && HeavyMovement->IsSprinting()
+		&& GetVelocity().Size2D() > WingBeamMinSprintSpeed;
+
+	bool bJumpTrigger = false;
+	if (bWingBeamsOnJump)
+	{
+		const UHeavyAnimInstance* Anim = GetMesh() ? Cast<UHeavyAnimInstance>(GetMesh()->GetAnimInstance()) : nullptr;
+		bJumpTrigger = (Anim && Anim->JumpAnim)
+			? Anim->IsPlayingJumpAnim()
+			: HeavyMovement->IsInLiftoff() && GetVelocity().Z > 0.f;
+	}
+
+	if (bDashTrigger || bSprintTrigger || bJumpTrigger)
+	{
+		WingBeamOffTimer = WingBeamOffDelay;
+		if (!bWingBeamsOn)
+		{
+			SetWingBeamsOn(true);
+		}
+	}
+	else if (bWingBeamsOn)
+	{
+		WingBeamOffTimer -= DeltaSeconds;
+		if (WingBeamOffTimer <= 0.f)
+		{
+			SetWingBeamsOn(false);
+		}
+	}
+}
+
+void AHeavyCharacter::SetWingBeamsOn(bool bOn)
+{
+	bWingBeamsOn = bOn;
+	for (UNiagaraComponent* Comp : WingBeamComponents)
+	{
+		if (!Comp)
+		{
+			continue;
+		}
+		if (bOn)
+		{
+			Comp->Activate(true); // Reset so the beams restart cleanly.
+		}
+		else if (bWingBeamsInstantOff)
+		{
+			Comp->DeactivateImmediate();
+		}
+		else
+		{
+			Comp->Deactivate();
+		}
+	}
 }
 
 void AHeavyCharacter::InitThrusters()
@@ -257,6 +551,10 @@ void AHeavyCharacter::InitThrusters()
 	GetComponents<UNiagaraComponent>(NiagaraComponents);
 	for (UNiagaraComponent* Comp : NiagaraComponents)
 	{
+		if (WingBeamComponents.Contains(Comp))
+		{
+			continue; // Wing beams are switched on/off separately.
+		}
 		const TArray<FLinearColor> Hot = UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayColor(Comp, RedColorArrayParam);
 		if (Hot.IsEmpty())
 		{

@@ -7,6 +7,8 @@
 #include "HeavyHUDWidget.generated.h"
 
 class UProgressBar;
+class UTextBlock;
+class UWidget;
 class UHeavyMovementComponent;
 
 /**
@@ -36,9 +38,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|HUD", meta = (ClampMin = "0", ClampMax = "1"))
 	float LowFuelThreshold = 0.25f;
 
+	/** Optional reticle named "LockOnMarker" (inside a Canvas Panel). Moved over the lock-on target; hidden when unlocked. */
+	UPROPERTY(BlueprintReadOnly, Category = "Heavy|HUD", meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> LockOnMarker;
+
+	/** Optional text named "SpeedText": horizontal speed readout, for tuning movement. */
+	UPROPERTY(BlueprintReadOnly, Category = "Heavy|HUD", meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> SpeedText;
+
+	/** Show speed in km/h (true) or m/s (false). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|HUD")
+	bool bSpeedInKmh = true;
+
 	UFUNCTION(BlueprintPure, Category = "Heavy|HUD")
 	UHeavyMovementComponent* GetHeavyMovement() const;
 
 protected:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+
+private:
+	void UpdateLockOnMarker();
 };

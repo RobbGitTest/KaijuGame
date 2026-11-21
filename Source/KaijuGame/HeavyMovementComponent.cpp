@@ -132,9 +132,60 @@ float UHeavyMovementComponent::GetTimeSinceDashStart() const
 
 FRotator UHeavyMovementComponent::GetDeltaRotation(float DeltaTime) const
 {
+	if (IsLockedOn())
+	{
+		const float Rate = IsHoldingDashFacing() ? LockedDashTurnRate : LockOnTurnRate;
+		return FRotator(0.f, Rate * DeltaTime, 0.f);
+	}
+
 	// During (and just after) a dash Heavy commits to its heading: turning toward new input is heavily slowed.
 	const FRotator Delta = Super::GetDeltaRotation(DeltaTime);
 	return IsDashRotationLocked() ? Delta * DashRotationRateScale : Delta;
+}
+
+FRotator UHeavyMovementComponent::ComputeOrientToMovementRotation(const FRotator& CurrentRotation, float DeltaTime, FRotator& DeltaRotation) const
+{
+	if (!IsLockedOn() || !UpdatedComponent)
+	{
+		return Super::ComputeOrientToMovementRotation(CurrentRotation, DeltaTime, DeltaRotation);
+	}
+
+	// Locked on: face the dash direction during a locked dash, otherwise the target. Movement input only strafes.
+	FVector FaceDir = IsHoldingDashFacing()
+		? DashDirection
+		: (LockOnFocusLocation - UpdatedComponent->GetComponentLocation()).GetSafeNormal2D();
+	if (FaceDir.IsNearlyZero())
+	{
+		return CurrentRotation;
+	}
+	return FRotator(0.f, FaceDir.Rotation().Yaw, 0.f);
+}
+
+void UHeavyMovementComponent::SetLockOnTarget(AActor* NewTarget)
+{
+	LockOnTarget = NewTarget;
+	if (NewTarget)
+	{
+		LockOnFocusLocation = NewTarget->GetActorLocation();
+	}
+	else
+	{
+		DashFacingEndTime = -1.0e9;
+	}
+}
+
+void UHeavyMovementComponent::HoldDashFacing(float Duration)
+{
+	if (const UWorld* World = GetWorld())
+	{
+		DashFacingEndTime = World->GetTimeSeconds() + FMath::Max(0.f, Duration);
+	}
+}
+
+bool UHeavyMovementComponent::IsHoldingDashFacing() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetTimeSeconds() < DashFacingEndTime;
 }
 
 bool UHeavyMovementComponent::CanDash() const
@@ -181,7 +232,8 @@ bool UHeavyMovementComponent::TryDash(FVector WorldDirection, FVector FallbackFo
 	}
 
 	FVector Dir = WorldDirection.GetSafeNormal2D();
-	if (Dir.IsNearlyZero())
+	const bool bBackstep = Dir.IsNearlyZero();
+	if (bBackstep)
 	{
 		// No input: back-step away from where the camera looks.
 		Dir = -FallbackForward.GetSafeNormal2D();
@@ -190,6 +242,7 @@ bool UHeavyMovementComponent::TryDash(FVector WorldDirection, FVector FallbackFo
 	{
 		return false;
 	}
+	bLastDashWasBackstep = bBackstep;
 
 	if (!bHoverGrounded)
 	{
@@ -201,6 +254,14 @@ bool UHeavyMovementComponent::TryDash(FVector WorldDirection, FVector FallbackFo
 	bDashRecovering = false;
 	LastDashStartTime = GetWorld()->GetTimeSeconds();
 	SetThrusting(false);
+
+	// Locked on: a dash with input turns Heavy to look where it lunges, then it turns back to the target.
+	// A back-step keeps facing the target.
+	DashFacingEndTime = -1.0e9;
+	if (IsLockedOn() && !bBackstep)
+	{
+		HoldDashFacing(LockedDashFacingTime);
+	}
 	OnDashStarted.Broadcast();
 	return true;
 }

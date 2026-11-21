@@ -66,6 +66,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim")
 	bool bAirDashUsesGroundPose = true;
 
+	// --- Tuning: lock-on strafe ------------------------------------------------------------
+
+	/** How quickly the graph blends between free locomotion and the strafe blend space when locking / unlocking. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim|LockOn", meta = (ClampMin = "0"))
+	float LockOnBlendSpeed = 6.f;
+
+	/** How quickly StrafeX / StrafeY follow the real local velocity. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Heavy|Anim|LockOn", meta = (ClampMin = "0"))
+	float StrafeInterpSpeed = 8.f;
+
 	// --- Tuning: one-shots -----------------------------------------------------------------
 
 	/** Slot the one-shots play on. ABP_Heavy's AnimGraph needs a Slot node with this name. */
@@ -164,6 +174,24 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
 	float AirAlpha = 0.f;
 
+	/** Strafe blend space X: sideways speed, -1 full strafe left .. +1 full strafe right (normal top speed). */
+	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
+	float StrafeX = 0.f;
+
+	/** Strafe blend space Y: -1 walking backwards, 0 idle, 1 walk forward, 2 run forward. */
+	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
+	float StrafeY = 0.f;
+
+	/**
+	 * Blend weight for the strafe blend space (Blend node alpha: 0 = BS_Heavy_Movement, 1 = BS_Heavy_Strafe).
+	 * Rises when locked on and fades out while airborne so the air poses still play.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
+	float StrafeAlpha = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
+	bool bIsLockedOn = false;
+
 	/** Chest (Spine2_Jnt) rotation, component space, for Transform (Modify) Bone "Add to Existing". */
 	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
 	FRotator SpineBoneRotation = FRotator::ZeroRotator;
@@ -198,6 +226,10 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Heavy|Anim")
 	bool bIsThrusting = false;
 
+	/** True while the jump one-shot is playing (not counting its blend-out). */
+	UFUNCTION(BlueprintPure, Category = "Heavy|Anim")
+	bool IsPlayingJumpAnim() const;
+
 protected:
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
@@ -213,7 +245,10 @@ protected:
 
 private:
 	void UpdateSteerLean(float DeltaSeconds);
-	void PlayOneShot(UAnimSequenceBase* Anim, float PlayRate);
+	UAnimMontage* PlayOneShot(UAnimSequenceBase* Anim, float PlayRate);
+
+	/** Dynamic montage created for the current/last jump. */
+	TWeakObjectPtr<UAnimMontage> JumpMontage;
 
 	UPROPERTY(Transient)
 	TObjectPtr<ACharacter> OwnerCharacter;
@@ -227,4 +262,7 @@ private:
 
 	/** Vertical speed from the previous update, used to judge landing impact. */
 	float LastAirVerticalSpeed = 0.f;
+
+	/** Smoothed 0..1 lock-on weight (before the airborne fade). */
+	float LockOnAlpha = 0.f;
 };

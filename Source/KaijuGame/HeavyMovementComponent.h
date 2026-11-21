@@ -185,6 +185,52 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
 	bool IsDashRotationLocked() const { return GetTimeSinceDashStart() < DashDuration + DashRotationLockExtraTime; }
 
+	/** True if the last dash had no movement input (the back-step away from the camera / target). */
+	UFUNCTION(BlueprintPure, Category = "Heavy|Dash")
+	bool WasLastDashBackstep() const { return bLastDashWasBackstep; }
+
+	// --- Lock-on ---------------------------------------------------------------------------
+	// While a lock-on target is set Heavy faces the target and strafes (movement input no longer turns the body).
+
+	/** Turn rate (deg/s) used to keep facing the lock-on target. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0", Units = "deg"))
+	float LockOnTurnRate = 540.f;
+
+	/** Max speed multiplier while locked on (strafing). 1 = same as free movement. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0.1", ClampMax = "2"))
+	float LockOnSpeedScale = 1.f;
+
+	/** Locked-on dash with input: Heavy snaps to face the dash direction at this turn rate (deg/s). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0", Units = "deg"))
+	float LockedDashTurnRate = 1800.f;
+
+	/**
+	 * Locked-on dash with input: how long Heavy keeps facing the dash direction before turning back to the target (s).
+	 * The animation instance overrides this with the forward-dash clip's length when one is assigned.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0", Units = "s"))
+	float LockedDashFacingTime = 0.5f;
+
+	UFUNCTION(BlueprintCallable, Category = "Heavy|LockOn")
+	void SetLockOnTarget(AActor* NewTarget);
+
+	UFUNCTION(BlueprintPure, Category = "Heavy|LockOn")
+	AActor* GetLockOnTarget() const { return LockOnTarget.Get(); }
+
+	UFUNCTION(BlueprintPure, Category = "Heavy|LockOn")
+	bool IsLockedOn() const { return LockOnTarget.IsValid(); }
+
+	/** Point Heavy turns to face while locked on (set by the character every frame). */
+	void SetLockOnFocusLocation(const FVector& Location) { LockOnFocusLocation = Location; }
+
+	/** Keep facing DashDirection for Duration seconds from now (locked-on dash). */
+	UFUNCTION(BlueprintCallable, Category = "Heavy|LockOn")
+	void HoldDashFacing(float Duration);
+
+	/** True while a locked-on dash is overriding the facing. */
+	UFUNCTION(BlueprintPure, Category = "Heavy|LockOn")
+	bool IsHoldingDashFacing() const;
+
 	// --- Vertical (hover spring) -----------------------------------------------------------
 
 	/** Gap between the bottom of the capsule and the ground (cm). */
@@ -317,6 +363,7 @@ public:
 	virtual float GetMaxAcceleration() const override;
 	virtual float GetMaxBrakingDeceleration() const override;
 	virtual FRotator GetDeltaRotation(float DeltaTime) const override;
+	virtual FRotator ComputeOrientToMovementRotation(const FRotator& CurrentRotation, float DeltaTime, FRotator& DeltaRotation) const override;
 	virtual bool ShouldRemainVertical() const override;
 
 protected:
@@ -329,7 +376,7 @@ protected:
 	/** Sweeps down for ground; fills HoverGroundDistance and returns true if hoverable ground is in reach. */
 	bool TraceHoverGround(float& OutGroundZ);
 
-	float GetCurrentMaxHoverSpeed() const { return bWantsToSprint ? SprintSpeed : MaxHoverSpeed; }
+	float GetCurrentMaxHoverSpeed() const { return (bWantsToSprint ? SprintSpeed : MaxHoverSpeed) * (IsLockedOn() ? LockOnSpeedScale : 1.f); }
 	float GetCurrentHoverAcceleration() const { return bWantsToSprint ? SprintAcceleration : HoverAcceleration; }
 
 	void SetThrusting(bool bNewThrusting);
@@ -357,4 +404,9 @@ private:
 	bool bDashRecovering = false;
 	double LastDashStartTime = -1.0e9;
 	int32 AirDashesUsed = 0;
+	bool bLastDashWasBackstep = false;
+
+	TWeakObjectPtr<AActor> LockOnTarget;
+	FVector LockOnFocusLocation = FVector::ZeroVector;
+	double DashFacingEndTime = -1.0e9;
 };

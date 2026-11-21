@@ -78,6 +78,30 @@ void UHeavyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		? FMath::FInterpTo(AirAlpha, TargetAir, DeltaSeconds, AirInterpSpeed)
 		: TargetAir;
 
+	// Lock-on strafe: velocity in Heavy's local frame, normalised like LocomotionAlpha.
+	bIsLockedOn = HeavyMovement->IsLockedOn();
+	const FVector LocalVel = OwnerCharacter->GetActorQuat().UnrotateVector(FVector(Velocity.X, Velocity.Y, 0.f));
+	const float TargetStrafeX = FMath::Clamp(LocalVel.Y / WalkSpeed, -1.f, 1.f);
+	float TargetStrafeY = LocalVel.X <= WalkSpeed
+		? LocalVel.X / WalkSpeed
+		: 1.f + (LocalVel.X - WalkSpeed) / (RunSpeed - WalkSpeed);
+	TargetStrafeY = FMath::Clamp(TargetStrafeY, -1.f, FMath::Min(2.f, MaxLocomotionAlpha));
+	if (StrafeInterpSpeed > 0.f)
+	{
+		StrafeX = FMath::FInterpTo(StrafeX, TargetStrafeX, DeltaSeconds, StrafeInterpSpeed);
+		StrafeY = FMath::FInterpTo(StrafeY, TargetStrafeY, DeltaSeconds, StrafeInterpSpeed);
+	}
+	else
+	{
+		StrafeX = TargetStrafeX;
+		StrafeY = TargetStrafeY;
+	}
+
+	LockOnAlpha = LockOnBlendSpeed > 0.f
+		? FMath::FInterpTo(LockOnAlpha, bIsLockedOn ? 1.f : 0.f, DeltaSeconds, LockOnBlendSpeed)
+		: (bIsLockedOn ? 1.f : 0.f);
+	StrafeAlpha = LockOnAlpha * (1.f - FMath::Clamp(FMath::Abs(AirAlpha), 0.f, 1.f));
+
 	UpdateSteerLean(DeltaSeconds);
 }
 
@@ -88,10 +112,23 @@ void UHeavyAnimInstance::UpdateSteerLean(float DeltaSeconds)
 	const FVector InputAccel = HeavyMovement->GetCurrentAcceleration();
 	const float InputStrength = FMath::Clamp(InputAccel.Size2D() / FMath::Max(1.f, HeavyMovement->GetMaxAcceleration()), 0.f, 1.f);
 
-	float TargetSteer = 0.f;
-	if (InputStrength > KINDA_SMALL_NUMBER)
+	// Locked on (and not mid locked-dash): the head and chest lead toward the target instead of the input,
+	// since input only strafes.
+	const bool bTrackTarget = bIsLockedOn && !HeavyMovement->IsHoldingDashFacing() && HeavyMovement->GetLockOnTarget();
+	FVector LookDir = FVector::ZeroVector;
+	if (bTrackTarget)
 	{
-		const FVector Local = OwnerCharacter->GetActorQuat().UnrotateVector(InputAccel.GetSafeNormal2D());
+		LookDir = (HeavyMovement->GetLockOnTarget()->GetActorLocation() - OwnerCharacter->GetActorLocation()).GetSafeNormal2D();
+	}
+	else if (InputStrength > KINDA_SMALL_NUMBER)
+	{
+		LookDir = InputAccel.GetSafeNormal2D();
+	}
+
+	float TargetSteer = 0.f;
+	if (!LookDir.IsNearlyZero())
+	{
+		const FVector Local = OwnerCharacter->GetActorQuat().UnrotateVector(LookDir);
 		TargetSteer = FMath::RadiansToDegrees(FMath::Atan2(Local.Y, Local.X));
 	}
 	SteerAngle = TargetSteer;
@@ -117,8 +154,11 @@ void UHeavyAnimInstance::UpdateSteerLean(float DeltaSeconds)
 		TargetSpine.Pitch = -ForwardLean * (bInvertSteerPitch ? -1.f : 1.f);
 		TargetHead.Pitch = -TargetSpine.Pitch * HeadLevelling;
 
-		// Bank into the turn: steering right drops the right shoulder.
-		TargetSpine.Roll = (Steer / 90.f) * MaxSpineBank * SpeedFactor * (bInvertSteerBank ? -1.f : 1.f);
+		// Bank into the turn: steering right drops the right shoulder. Not while strafing (no turn to bank into).
+		if (!bTrackTarget)
+		{
+			TargetSpine.Roll = (Steer / 90.f) * MaxSpineBank * SpeedFactor * (bInvertSteerBank ? -1.f : 1.f);
+		}
 	}
 
 	if (SteerLeanInterpSpeed > 0.f)
@@ -141,17 +181,20 @@ void UHeavyAnimInstance::UpdateSteerLean(float DeltaSeconds)
 	HeadBoneRotation = (MeshRelInv * HeadLeanActor.Quaternion() * MeshRel).Rotator();
 }
 
-void UHeavyAnimInstance::PlayOneShot(UAnimSequenceBase* Anim, float PlayRate)
+UAnimMontage* UHeavyAnimInstance::PlayOneShot(UAnimSequenceBase* Anim, float PlayRate)
 {
-	if (Anim)
-	{
-		PlaySlotAnimationAsDynamicMontage(Anim, OneShotSlotName, OneShotBlendIn, OneShotBlendOut, PlayRate);
-	}
+	return Anim ? PlaySlotAnimationAsDynamicMontage(Anim, OneShotSlotName, OneShotBlendIn, OneShotBlendOut, PlayRate) : nullptr;
 }
 
 void UHeavyAnimInstance::HandleLiftoff()
 {
-	PlayOneShot(JumpAnim, JumpAnimPlayRate);
+	JumpMontage = PlayOneShot(JumpAnim, JumpAnimPlayRate);
+}
+
+bool UHeavyAnimInstance::IsPlayingJumpAnim() const
+{
+	// Montage_IsPlaying is false once the montage is blending out or was interrupted (dash / landing).
+	return JumpMontage.IsValid() && Montage_IsPlaying(JumpMontage.Get());
 }
 
 void UHeavyAnimInstance::HandleDashStarted()
@@ -160,6 +203,19 @@ void UHeavyAnimInstance::HandleDashStarted()
 	{
 		return;
 	}
+	// Locked on with input: Heavy snaps to face the dash direction, so the forward dash always fits. Keep facing it
+	// until the clip (minus its blend-out) is done, then the movement component turns Heavy back to the target.
+	if (HeavyMovement->IsLockedOn() && !HeavyMovement->WasLastDashBackstep())
+	{
+		if (ForwardDashAnim)
+		{
+			const float Rate = FMath::Max(ForwardDashAnimPlayRate, 0.05f);
+			HeavyMovement->HoldDashFacing(FMath::Max(0.f, ForwardDashAnim->GetPlayLength() / Rate - OneShotBlendOut));
+			PlayOneShot(ForwardDashAnim, ForwardDashAnimPlayRate);
+		}
+		return;
+	}
+
 	const FVector Facing = OwnerCharacter->GetActorForwardVector().GetSafeNormal2D();
 	if (FVector::DotProduct(Facing, HeavyMovement->GetDashDirection()) >= ForwardDashMinDot)
 	{

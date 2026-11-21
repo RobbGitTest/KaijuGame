@@ -12,6 +12,7 @@ class UHeavyMovementComponent;
 class UInputAction;
 class UInputMappingContext;
 class UNiagaraComponent;
+class UNiagaraSystem;
 class USpringArmComponent;
 struct FInputActionValue;
 
@@ -41,6 +42,25 @@ public:
 
 	USpringArmComponent* GetCameraBoom() const { return CameraBoom; }
 	UCameraComponent* GetFollowCamera() const { return FollowCamera; }
+
+	// --- Lock-on -----------------------------------------------------------------------------
+
+	/** Toggle: lock onto the best target in view, or release the current lock. */
+	UFUNCTION(BlueprintCallable, Category = "Heavy|LockOn")
+	void ToggleLockOn();
+
+	UFUNCTION(BlueprintCallable, Category = "Heavy|LockOn")
+	void ClearLockOn();
+
+	UFUNCTION(BlueprintPure, Category = "Heavy|LockOn")
+	AActor* GetLockOnTarget() const { return LockOnTarget.Get(); }
+
+	UFUNCTION(BlueprintPure, Category = "Heavy|LockOn")
+	bool IsLockedOn() const { return LockOnTarget.IsValid(); }
+
+	/** World-space aim point on the current target (its "LockOnPoint" component, else its bounds centre). */
+	UFUNCTION(BlueprintPure, Category = "Heavy|LockOn")
+	FVector GetLockOnTargetLocation() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -97,6 +117,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Input")
 	TObjectPtr<UInputAction> BoostAction;
 
+	/** Boolean. Middle mouse / right stick click: toggle lock-on. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|Input")
+	TObjectPtr<UInputAction> LockOnAction;
+
 	/** A boost press released faster than this (s) counts as a tap. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Input", meta = (ClampMin = "0", Units = "s"))
 	float DashTapMaxDuration = 0.15f;
@@ -130,6 +154,88 @@ protected:
 	/** How quickly the FOV blends in/out. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|Camera", meta = (ClampMin = "0"))
 	float FOVInterpSpeed = 4.f;
+
+	// --- Lock-on ---------------------------------------------------------------------------
+
+	/** Actors with this tag can be locked onto. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|LockOn")
+	FName LockOnTargetTag = TEXT("LockOnTarget");
+
+	/** A component with this tag on the target is used as the aim point. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|LockOn")
+	FName LockOnPointTag = TEXT("LockOnPoint");
+
+	/** Targets further than this can't be acquired (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0", Units = "cm"))
+	float LockOnMaxDistance = 12000.f;
+
+	/** The lock breaks when the target gets further than this (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0", Units = "cm"))
+	float LockOnBreakDistance = 16000.f;
+
+	/** Targets within this angle of the camera's view direction are preferred (deg). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn", meta = (ClampMin = "0", ClampMax = "180", Units = "deg"))
+	float LockOnViewAngle = 50.f;
+
+	/** If nothing is in view, lock onto the nearest target in range instead (camera swings to it). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn")
+	bool bLockOnAllowOutsideView = true;
+
+	/**
+	 * Where the camera looks while locked on, from Heavy (0) to the target (1). The camera stays behind Heavy on the
+	 * Heavy->target line, so both stay in frame; this mainly sets how much it tilts up/down toward the target.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (ClampMin = "0", ClampMax = "1"))
+	float LockOnCameraFocusBias = 0.35f;
+
+	/** Extra pitch added to the locked-on camera (deg). Negative looks further down, keeping Heavy higher in frame. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (Units = "deg"))
+	float LockOnCameraPitchOffset = -8.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (Units = "deg"))
+	float LockOnCameraPitchMin = -40.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (Units = "deg"))
+	float LockOnCameraPitchMax = 20.f;
+
+	/** How quickly the camera swings to frame Heavy and the target. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (ClampMin = "0"))
+	float LockOnCameraInterpSpeed = 6.f;
+
+	/** Extra spring-arm length while locked on (cm), to widen the shot. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (Units = "cm"))
+	float LockOnExtraArmLength = 250.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera", meta = (ClampMin = "0"))
+	float ArmLengthInterpSpeed = 4.f;
+
+	/** If false, mouse / right-stick look is ignored while locked on (the camera frames the target by itself). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|LockOn|Camera")
+	bool bAllowLookWhileLockedOn = false;
+
+	// --- Dash VFX --------------------------------------------------------------------------
+
+	/** Niagara system spawned when a dash starts (e.g. NS_Impulse). Empty = none. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|DashVFX")
+	TObjectPtr<UNiagaraSystem> DashVFX;
+
+	/** Spawn offset in Heavy's local space (X forward, Y right, Z up) from the capsule centre (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|DashVFX")
+	FVector DashVFXOffset = FVector(0.f, 0.f, -60.f);
+
+	/**
+	 * Rotation applied on top of the dash direction. The effect's +X points along the dash; e.g. yaw 180 points it
+	 * backwards (a trail), pitch 90 lays a ring flat.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|DashVFX")
+	FRotator DashVFXRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|DashVFX")
+	FVector DashVFXScale = FVector(1.f);
+
+	/** Attach the effect to Heavy so it travels with the dash; off = it stays where the dash started. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|DashVFX")
+	bool bAttachDashVFX = false;
 
 	// --- HUD -------------------------------------------------------------------------------
 
@@ -197,6 +303,42 @@ protected:
 	UFUNCTION(BlueprintPure, Category = "Heavy|Thrusters")
 	bool AreThrustersHot() const { return bThrustersHot; }
 
+	// --- Wing beams --------------------------------------------------------------------------
+	// Niagara components whose name starts with WingBeamNamePrefix (or that carry the WingBeamTag component tag)
+	// are off during normal movement and switch on while dashing / sprinting at speed.
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|WingBeams")
+	FString WingBeamNamePrefix = TEXT("NS_WingBeam");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Heavy|WingBeams")
+	FName WingBeamTag = TEXT("WingBeam");
+
+	/** Beams on while dashing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|WingBeams")
+	bool bWingBeamsOnDash = true;
+
+	/** Beams on while the jump animation plays (or, without a jump clip, while rising from a liftoff). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|WingBeams")
+	bool bWingBeamsOnJump = true;
+
+	/** Beams on while sprinting faster than WingBeamMinSprintSpeed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|WingBeams")
+	bool bWingBeamsOnSprint = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|WingBeams", meta = (ClampMin = "0", Units = "cm/s"))
+	float WingBeamMinSprintSpeed = 300.f;
+
+	/** Beams stay on this long after the trigger ends (s), so a dash into a sprint doesn't flicker. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|WingBeams", meta = (ClampMin = "0", Units = "s"))
+	float WingBeamOffDelay = 0.25f;
+
+	/** Off = existing particles finish their lifetime (soft fade). On = beams vanish instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heavy|WingBeams")
+	bool bWingBeamsInstantOff = false;
+
+	UFUNCTION(BlueprintPure, Category = "Heavy|WingBeams")
+	bool AreWingBeamsOn() const { return bWingBeamsOn; }
+
 	// --- Input handlers --------------------------------------------------------------------
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
@@ -205,8 +347,20 @@ protected:
 	void JumpReleased();
 	void BoostPressed();
 	void BoostReleased();
+	void LockOnPressed();
+
+	UFUNCTION()
+	void HandleDashStarted();
 
 private:
+	AActor* FindBestLockOnTarget() const;
+	FVector GetTargetAimPoint(const AActor* Target) const;
+	void UpdateLockOn(float DeltaSeconds);
+	void UpdateArmLength(float DeltaSeconds);
+
+	TWeakObjectPtr<AActor> LockOnTarget;
+	float BaseArmLength = 900.f;
+
 	void UpdateLean(float DeltaSeconds);
 	void UpdateCameraFOV(float DeltaSeconds);
 	void CreateHUD(APlayerController* PC);
@@ -214,6 +368,15 @@ private:
 	void InitThrusters();
 	void UpdateThrusters();
 	void ApplyThrusterState(bool bHot);
+	void InitWingBeams();
+	void UpdateWingBeams(float DeltaSeconds);
+	void SetWingBeamsOn(bool bOn);
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UNiagaraComponent>> WingBeamComponents;
+
+	bool bWingBeamsOn = false;
+	float WingBeamOffTimer = 0.f;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UNiagaraComponent>> ThrusterComponents;
